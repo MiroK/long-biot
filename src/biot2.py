@@ -14,6 +14,8 @@ from block.block_mat import block_mat
 
 print = PETSc.Sys.Print
 
+from utils import StackOperator
+
 from biot3 import (BiotParameters, Laplacian, generate_2d_domains, setup_2d_mms,
                    parse_V_bcs, parse_Q_bcs, get_path, SYM)
 
@@ -135,54 +137,65 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     L = inner(Constant((0, 0)), v)*dx
     B0, _ = assemble_system(b0, L, Wbcs[0])
 
-    # Now components of Espen preconditioner
-    c_form = c*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
-    # Add bcs for pressure
+
+    ds = Measure('ds', domain=Q.mesh(), subdomain_data=boundaries)        
     hF = CellDiameter(Q.mesh())
     nF = FacetNormal(Q.mesh())
     gammaF = Constant(5)
+    
+    def c_form(p, q, ds=ds, hF=hF, gammaF=gammaF):
+        # Now components of Espen preconditioner
+        a = c*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
 
-    # assert not set(p_dirichlet_tags)
+        # Pressure bcs
+        for tag in p_dirichlet_tags:
+            a += (- inner(dot(K*grad(p), nF), q)*ds(tag)
+                  - inner(dot(K*grad(q), nF), p)*ds(tag)
+                  + (K*gammaF/hF)*inner(p, q)*ds(tag))    
+        return a
 
-    ds = Measure('ds', domain=Q.mesh(), subdomain_data=boundaries)    
-    for tag in p_dirichlet_tags:
-        c_form += (- inner(dot(K*grad(p), nF), q)*ds(tag)
-                   - inner(dot(K*grad(q), nF), p)*ds(tag)
-                   + (K*gammaF/hF)*inner(p, q)*ds(tag))    
-    C = assemble(c_form)
+    # Extended space for the inverse
+    QQ = FunctionSpace(mesh, MixedElement([Q.ufl_element()]*2))
 
+    p0, p1 = TrialFunctions(QQ)
+    q0, q1 = TestFunctions(QQ)
+    
     # ---
 
     bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
                'P': set()}
     scale = Constant(1) # FIXME, this will be the thickness
     kappa = alpha**2/(1+lmbda)*scale**2
-    k_form, ker = Laplacian(Q, boundaries, bc_tags, kappa=kappa)
-
-    K = assemble(k_form)
+    k_form, ker = Laplacian((p1, q1), boundaries, bc_tags, kappa=kappa)
 
     # ---
-    m_form = (alpha**2/(1+lmbda))*inner(p, q)*dx
-    M = assemble(m_form)
+    m_form = (alpha**2/(1+lmbda))*inner(p0, q0)*dx
+
+    e_form = c_form(p0, q0) + c_form(p1, q0) + c_form(p0, q1) + c_form(p1, q1)
+    e_form += m_form + k_form
+
+    EE = assemble(e_form)
+
+    # ----
 
     precond0 = LU(B0)
-    
-    # Puttin together
-    EE = block_mat([[M + C, C],
-                    [C, K + C]])
 
-    E = monolithic(EE)
-    # ----
     if inverseQ == 'lu':
-        invE = LU(E)
+        invE = LU(EE)
     elif inverseQ == 'amg':
-        raise ValueError
-        invE = AMG(E)
 
-    S = StackOperator(2, Q)  # V - >
-    R = ReductionOperator([2], [Q, Q])
+        invE = AMG(EE,
+                   parameters={
+                       'pc_hypre_boomeramg_strong_threshold': 0.1,
+                       'pc_hypre_boomeramg_nodal_coarsen': 1,
+                       'pc_hypre_boomeramg_vec_interp_variant': 1,
+                       'pc_hypre_boomeramg_interp_type': 'ext+i',
+                       'pc_hypre_boomeramg_smooth_type': 'Schwarz-smoothers'
+                   })
 
-    precond1 = S.T*R.T*invE*R*S
+    S = StackOperator(Q, QQ)  
+
+    precond1 = S.T*invE*S
     
     iBB = block_diag_mat([precond0, precond1])
 
@@ -249,6 +262,7 @@ if __name__ == '__main__':
     opts.setValue('ksp_view_pre', None)
     opts.setValue('ksp_monitor_true_residual', None)
     opts.setValue('ksp_converged_reason', None)
+    opts.setValue('options_view', None)
 
     headers = ('h', 'ndofs', '|GD|', '|GP|',
                '|eu|1', 'reu', '|ep|1', 'rep1',
