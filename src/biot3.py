@@ -13,10 +13,11 @@ from block.algebraic.petsc import KSP, LU, AMG
 from block.block_mat import block_mat
 import os
 
+from utils import SerializeOperator
+
 print = PETSc.Sys.Print
 
 BiotParameters = namedtuple('BiotParameters', ('alpha', 'K', 'mu', 'lmbda', 'c'))
-
 
 SYM = lambda x: sym(x)
 
@@ -189,7 +190,7 @@ def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_ta
     return A, b, W, W_bcs
 
 
-def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags):
+def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags, inverseQ):
     '''Structure V x (Q x QT) where pressures are coupled'''
     u, p, pT = map(TrialFunction, W)
     v, q, qT = map(TestFunction, W)
@@ -226,6 +227,8 @@ def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_di
     B11 = block_mat([[B[1][1], B[1][2]],
                      [B[2][1], B[2][2]]])
 
+    assert inverseQ == 'lu'
+
     iB00 = LU(B00)
     iB11 = LU(monolithic(B11))
     R = ReductionOperator([1, 3], W)
@@ -234,12 +237,14 @@ def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_di
     return B, iBB
 
 
-def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags):
+def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags,
+                            inverseQ):
     '''Structure V x (Q x QT) where pressures are coupled'''
     u, p, pT = map(TrialFunction, W)
     v, q, qT = map(TestFunction, W)
 
     V, Q, QT = W
+    assert Q.ufl_element() == QT.ufl_element()
     
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
                                for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
@@ -250,67 +255,92 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
 
     ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 
-    QQ = [Q, QT, QT]
+
+    if inverseQ == 'amg':
+        assert Q.ufl_element() == QT.ufl_element()
+    # Monolithic operator for stacked pressure    
+    QQ = FunctionSpace(mesh,
+                       MixedElement([Q.ufl_element(), QT.ufl_element(), QT.ufl_element()]))
     # ---
-    a = block_form(QQ, 2)
-    a[0][0] = (c + alpha**2/lmbda)*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
+    p0, p1, p2 = TrialFunctions(QQ)
+    q0, q1, q2 = TestFunctions(QQ)
+
+    # ----
+    a = (c + alpha**2/lmbda)*inner(p0, q0)*dx + inner(K*grad(p0), grad(q0))*dx
 
     nF, hF = FacetNormal(Q.mesh()), CellDiameter(Q.mesh())
     gammaF = Constant(5)
     # Add Nietsche terms
     for tag in p_dirichlet_tags:
-        a[0][0] += (
-            - inner(dot(K*grad(p), nF), q)*ds(tag)
-            - inner(dot(K*grad(q), nF), p)*ds(tag)
-            + (K*gammaF/hF)*inner(p, q)*ds(tag)
+        a += (
+            - inner(dot(K*grad(p0), nF), q0)*ds(tag)
+            - inner(dot(K*grad(q0), nF), p0)*ds(tag)
+            + (K*gammaF/hF)*inner(p0, q0)*ds(tag)
         )
         
     
-    a[0][1] = (-alpha/lmbda)*inner(pT, q)*dx
-    a[0][2] = (-alpha/lmbda)*inner(pT, q)*dx
+    a += (-alpha/lmbda)*inner(p1, q0)*dx
+    a += (-alpha/lmbda)*inner(p2, q0)*dx
 
-    a[1][0] = (-alpha/lmbda)*inner(qT, p)*dx
+    a += (-alpha/lmbda)*inner(q1, p0)*dx
 
-    a[1][1] = (1/2/mu + 1/lmbda)*inner(pT, qT)*dx
-    a[1][2] = (1/lmbda)*inner(pT, qT)*dx
+    a += (1/2/mu + 1/lmbda)*inner(p1, q1)*dx
+    a += (1/lmbda)*inner(p2, q1)*dx
 
-    a[2][0] = (-alpha/lmbda)*inner(qT, p)*dx    
-    a[2][1] = (1/lmbda)*inner(pT, qT)*dx
+    a += (-alpha/lmbda)*inner(q2, p0)*dx    
+    a += (1/lmbda)*inner(p1, q2)*dx
 
     bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
                'P': set()}
     scale = Constant(1) # FIXME, this will be the thickness
-    kappa = scale**2/2/mu
-    k_form, ker = Laplacian(QT, boundaries, bc_tags, kappa=kappa)
+    kappa = alpha**2/(1+lmbda)*scale**2
+    k_form, ker = Laplacian((p2, q2), boundaries, bc_tags, kappa=kappa)
 
-    a[2][2] = k_form + (1/lmbda)*inner(pT, qT)*dx
+    a += k_form + (1/lmbda)*inner(p2, q2)*dx
+
+    # Puttin together
+    EE = ii_assemble(a)
+   
+    # ----
 
     precond0 = LU(B0)
     
-    # Puttin together
-    EE = ii_assemble(a)
+    # Putting together
+    if inverseQ == 'lu':
+        invE = LU(EE)
+    elif inverseQ == 'amg':
 
-    E = monolithic(EE)
-    invE = LU(E)
+        invE = AMG(EE,
+                   parameters={
+                       'pc_hypre_boomeramg_strong_threshold': 0.1,
+                       'pc_hypre_boomeramg_nodal_coarsen': 1,
+                       'pc_hypre_boomeramg_vec_interp_variant': 1,
+                       'pc_hypre_boomeramg_interp_type': 'ext+i',
+                       'pc_hypre_boomeramg_smooth_type': 'Schwarz-smoothers'
+                   })
     precond1 = invE
 
     S = StackOperator(2, QT, W=[V, Q])
     R = ReductionOperator([1, 4], [V, Q, QT, QT])
 
-    precond = block_diag_mat([precond0, precond1])
+    # Serialization of QQ
+    T = SerializeOperator(QQ)
+
+    precond = block_diag_mat([precond0, T*precond1*T.T])
     
     iBB = S.T*R.T*precond*R*S
 
     return None, iBB
 
 
-def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags):
+def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags,
+                                     inverseQ):
     '''Structure V x (Q x QT) where pressures are coupled'''
     u, p, pT = map(TrialFunction, W)
     v, q, qT = map(TestFunction, W)
 
     V, Q, QT = W
-    
+
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
                                for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
 
@@ -357,6 +387,8 @@ def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags
     # Puttin together
     precond0 = LU(B0)
     precond1 = LU(B1)
+
+    assert inverseQ == 'lu'
 
     E = monolithic(EE)
     invE = LU(E)
@@ -411,6 +443,7 @@ if __name__ == '__main__':
     parser.add_argument('-nrefs', type=int, default=4)
     
     parser.add_argument('-precond', type=str, default='standard')
+    parser.add_argument('-inverseQ', type=str, default='lu')
     
     # bcs
     parser.add_argument('-ubcs', type=str, help='Spec of bcs for momentum: D or T', default='TTDD')
@@ -442,6 +475,7 @@ if __name__ == '__main__':
     u_dirichlet_tags = parse_V_bcs(args.ubcs, boundary_tags)
     p_dirichlet_tags = parse_Q_bcs(args.pbcs, boundary_tags)
 
+    pdegrees = '2_1_1'
 
     get_inner_product = {'standard': get_inner_product_standard,
                          'espen': get_inner_product_espen,
@@ -471,13 +505,15 @@ if __name__ == '__main__':
         A, b, W, W_bcs = get_system(boundaries, parameters=parameters, data=mms_data,
                                     u_dirichlet_tags=u_dirichlet_tags,
                                     p_dirichlet_tags=p_dirichlet_tags,
-                                    bdry_tags=boundary_tags)
+                                    bdry_tags=boundary_tags,
+                                    pdegrees=pdegrees)
 
         B, invB = get_inner_product(boundaries, parameters=parameters,
                                     u_dirichlet_tags=u_dirichlet_tags,
                                     p_dirichlet_tags=p_dirichlet_tags,
                                     W=W, Wbcs=W_bcs,
-                                    bdry_tags=boundary_tags)
+                                    bdry_tags=boundary_tags,
+                                    inverseQ=args.inverseQ)
 
         # Niters
         Ainv = KSP(A, precond=invB, 

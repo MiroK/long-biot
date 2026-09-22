@@ -153,11 +153,11 @@ if __name__ == '__main__':
                                    bdry_tags=boundary_tags)
 
         # [0, 1, 2], [3, 4, 5]
-        # C, QQ = get_operator(boundaries, parameters=parameters,
-        #                      u_dirichlet_tags=u_dirichlet_tags,
-        #                      p_dirichlet_tags=p_dirichlet_tags,
-        #                      W=W, Wbcs=W_bcs,
-        #                      bdry_tags=boundary_tags)
+        C, QQ = get_operator(boundaries, parameters=parameters,
+                             u_dirichlet_tags=u_dirichlet_tags,
+                             p_dirichlet_tags=p_dirichlet_tags,
+                             W=W, Wbcs=W_bcs,
+                             bdry_tags=boundary_tags)
 
         # # AA = monolithic(B)
         # #print(AA.array())

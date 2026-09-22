@@ -1,5 +1,8 @@
-from block import block_mat
-from dolfin import FunctionSpace
+from block.block_base import block_base
+from block.object_pool import vec_pool
+from block import block_vec
+
+from dolfin import FunctionSpace, MixedElement, Function
 
 from scipy.sparse import csr_matrix
 from xii.linalg.convert import numpy_to_petsc
@@ -7,6 +10,7 @@ import numpy as np
 
 
 def StackOperator(dspaces, rspaces):
+    '''Q -> Q x Q'''
     if isinstance(dspaces, FunctionSpace):
         assert isinstance(rspaces, FunctionSpace)
 
@@ -27,7 +31,48 @@ def StackOperator(dspaces, rspaces):
         return numpy_to_petsc(S)
 
     raise ValueError
-        
+
+
+class SerializeOperator(block_base):
+    '''Reordering'''
+    def __init__(self, mspace):
+        assert isinstance(mspace, FunctionSpace)
+
+        elm = mspace.ufl_element()
+        assert isinstance(elm, MixedElement)
+        assert elm.num_sub_elements() > 0
+
+        self.dofs = [mspace.sub(i).dofmap().dofs() for i in range(elm.num_sub_elements())]
+        self.W = mspace
+
+    @vec_pool
+    def create_vec(self, dim=1):
+        return Function(self.W).vector()
+
+    def matvec(self, b):
+        x = self.create_vec(dim=0)
+        x_arr = x.get_local()
+
+        start = 0
+        b_arr = b.get_local()
+        for (xi, dofsi) in zip(x, self.dofs):
+            x_arr[start:start+len(dofsi)] = b_arr[dofsi]
+            start += len(dofsi)
+        x.set_local(x_arr)
+        return x
+
+    def transpmult(self, b):
+        x = self.create_vec(dim=0)
+        x_arr = x.get_local()
+
+        start = 0
+        b_arr = b.get_local()
+        for (xi, dofsi) in zip(x, self.dofs):
+            x_arr[dofsi] = b_arr[start:start+len(dofsi)]
+            start += len(dofsi)
+        x.set_local(x_arr)
+        return x
+
 # -------------------------------------------------------------------
 
 if __name__ == '__main__':
@@ -40,7 +85,6 @@ if __name__ == '__main__':
 
     V = FunctionSpace(mesh, elm)
     VV = FunctionSpace(mesh, MixedElement([elm]*3))
-
 
     S = StackOperator(V, VV)
 
@@ -55,4 +99,3 @@ if __name__ == '__main__':
         c = inner(fV, fV)*dx
         e = inner(fV - fVi, fV - fVi)*dx
         print(sqrt(abs(assemble(e))), sqrt(abs(assemble(c))))
-    
