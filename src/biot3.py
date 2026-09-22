@@ -21,16 +21,21 @@ BiotParameters = namedtuple('BiotParameters', ('alpha', 'K', 'mu', 'lmbda', 'c')
 SYM = lambda x: sym(x)
 
 
-def Laplacian(V, boundaries, bc_tags, kappa):
+def Laplacian(arg, boundaries, bc_tags, kappa):
     '''-div(kappa*grad) with Dirichlet boundaries on tagged parts'''
-    mesh = V.mesh()
+    if isinstance(arg, FunctionSpace):
+        V = arg
+        u, v = TrialFunction(V), TestFunction(V)
+        mesh = V.mesh()        
+    else:
+        u, v = arg
+        mesh = u.ufl_domain().ufl_cargo()
 
     ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
     dx = Measure('dx', domain=mesh)
     
     hFi, hFe = CellDiameter(mesh), CellDiameter(mesh)
 
-    u, v = TrialFunction(V), TestFunction(V)
     a = kappa*inner(grad(u), grad(v))*dx + kappa*(1/avg(hFi))*inner(jump(u), jump(v))*dS
 
     volume = assemble(Constant(1)*dx)
@@ -115,15 +120,17 @@ def setup_2d_mms(parameters):
 
 # ---
 
-def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_tags, bdry_tags):
+def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_tags, bdry_tags,
+               pdegrees='2_2_1'):
     '''Three field formulation'''
     mesh = boundaries.mesh()
     ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
     n = FacetNormal(mesh)
 
-    V = VectorFunctionSpace(mesh, 'CG', 2)
-    Q = FunctionSpace(mesh, 'CG', 2)
-    QT = FunctionSpace(mesh, 'CG', 1)
+    V_deg, Q_deg, QT_deg = map(int, pdegrees.split('_'))
+    V = VectorFunctionSpace(mesh, 'CG', V_deg)
+    Q = FunctionSpace(mesh, 'CG', Q_deg)
+    QT = FunctionSpace(mesh, 'CG', QT_deg)
     W = [V, Q, QT]
     
     u, p, pT = map(TrialFunction, W)
@@ -273,7 +280,7 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
                'P': set()}
     scale = Constant(1) # FIXME, this will be the thickness
-    kappa = alpha**2/(1+lmbda)*scale**2
+    kappa = scale**2/2/mu
     k_form, ker = Laplacian(QT, boundaries, bc_tags, kappa=kappa)
 
     a[2][2] = k_form + (1/lmbda)*inner(pT, qT)*dx
@@ -291,6 +298,74 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     R = ReductionOperator([1, 4], [V, Q, QT, QT])
 
     precond = block_diag_mat([precond0, precond1])
+    
+    iBB = S.T*R.T*precond*R*S
+
+    return None, iBB
+
+
+def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags):
+    '''Structure V x (Q x QT) where pressures are coupled'''
+    u, p, pT = map(TrialFunction, W)
+    v, q, qT = map(TestFunction, W)
+
+    V, Q, QT = W
+    
+    mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
+                               for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
+
+    bV = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx
+    lV = inner(Constant((0, 0)), v)*dx
+    B0, _ = assemble_system(bV, lV, Wbcs[0])
+
+    ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
+
+    # ---
+
+    b1 = (c + alpha**2/lmbda)*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
+
+    nF, hF = FacetNormal(Q.mesh()), CellDiameter(Q.mesh())
+    gammaF = Constant(5)
+    # Add Nietsche terms
+    for tag in p_dirichlet_tags:
+        a[0][0] += (
+            - inner(dot(K*grad(p), nF), q)*ds(tag)
+            - inner(dot(K*grad(q), nF), p)*ds(tag)
+            + (K*gammaF/hF)*inner(p, q)*ds(tag)
+        )
+    B1 = assemble(b1)
+    
+
+    QQ = [QT, QT]
+    
+    a = block_form(QQ, 2)    
+    a[0][0] = (1/2/mu + 1/lmbda)*inner(pT, qT)*dx
+    a[0][1] = (1/lmbda)*inner(pT, qT)*dx
+
+    a[1][0] = (1/lmbda)*inner(pT, qT)*dx
+
+    bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
+               'P': set()}
+    scale = Constant(1) # FIXME, this will be the thickness
+    kappa = scale**2/2/mu
+    k_form, ker = Laplacian(QT, boundaries, bc_tags, kappa=kappa)
+
+    a[1][1] = k_form + (1/lmbda)*inner(pT, qT)*dx
+
+    EE = ii_assemble(a)
+    
+    # Puttin together
+    precond0 = LU(B0)
+    precond1 = LU(B1)
+
+    E = monolithic(EE)
+    invE = LU(E)
+    precond2 = invE
+
+    S = StackOperator(2, QT, W=[V, Q])
+    R = ReductionOperator([1, 2, 4], [V, Q, QT, QT])
+
+    precond = block_diag_mat([precond0, precond1, precond2])
     
     iBB = S.T*R.T*precond*R*S
 
@@ -369,7 +444,8 @@ if __name__ == '__main__':
 
 
     get_inner_product = {'standard': get_inner_product_standard,
-                         'espen': get_inner_product_espen}[args.precond]
+                         'espen': get_inner_product_espen,
+                         'espendiag': get_inner_product_espen_diagonal}[args.precond]
 
     parameters = BiotParameters(alpha=args.alpha, K=args.K, mu=args.mu, lmbda=args.lmbda, c=args.c)
     
