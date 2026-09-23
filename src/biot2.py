@@ -39,8 +39,8 @@ def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_ta
 
     a = block_form(W, 2)
     a[0][0] = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx + inner(lmbda*div(u), div(v))*dx
-    a[0][1] = -inner(p, div(v))*dx
-    a[1][0] = -inner(q, div(u))*dx
+    a[0][1] = -inner(alpha*p, div(v))*dx
+    a[1][0] = -inner(alpha*q, div(u))*dx
     a[1][1] = -c*inner(p, q)*dx -inner(K*grad(p), grad(q))*dx
 
     u_neumann_tags = bdry_tags - set(u_dirichlet_tags)

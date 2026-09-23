@@ -110,7 +110,7 @@ def setup_2d_mms(parameters):
                 setattr(expr, key, getattr(params, key))
         return expr
 
-    return {'u': as_expr(u), 'p': as_expr(p), 'pT': as_expr(pT),
+    return {'u': as_expr(u), 'p': as_expr(p), 'pT': as_expr(pT), 'flux': as_expr(flux),
             'f_u': as_expr(f_u),
             'f_p': as_expr(f_p),
             'u_neumann': dict(enumerate(map(as_expr, stress_data), 1)),
