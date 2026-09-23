@@ -14,7 +14,7 @@ from block.block_mat import block_mat
 
 print = PETSc.Sys.Print
 
-from utils import StackOperator
+from utils import StackOperator, get_domain_diameter
 
 from biot3 import (BiotParameters, Laplacian, generate_2d_domains, setup_2d_mms,
                    parse_V_bcs, parse_Q_bcs, get_path, SYM)
@@ -28,32 +28,24 @@ def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_ta
     n = FacetNormal(mesh)
 
     V = VectorFunctionSpace(mesh, 'CG', 2)
-    M = FunctionSpace(mesh, 'RT', 1)
-    QT = FunctionSpace(mesh, 'CG', 1)
-    Q = FunctionSpace(mesh, 'DG', 0)
-    W = [V, M, QT, Q]
+    Q = FunctionSpace(mesh, 'CG', 1)
+    R = FunctionSpace(mesh, 'R', 0)
+    W = [V, Q, R]
     
-    u, l, pT, p = map(TrialFunction, W)
-    v, m, qT, q = map(TestFunction, W)
+    u, p, r = map(TrialFunction, W)
+    v, q, dr = map(TestFunction, W)
 
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
                               for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
 
     a = block_form(W, 2)
-    a[0][0] = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx
-    a[0][2] = -inner(pT, div(v))*dx
-    
-    a[1][1] = (1/K)*inner(l, m)*dx
-    a[1][3] = -inner(p, div(m))*dx
+    a[0][0] = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx + inner(lmbda*div(u), div(v))*dx
+    a[0][1] = -inner(alpha*p, div(v))*dx
+    a[1][0] = -inner(alpha*q, div(u))*dx
+    a[1][2] = -inner(r, q)*dx
+    a[1][1] = -c*inner(p, q)*dx -inner(K*grad(p), grad(q))*dx
+    a[2][1] = -inner(dr, p)*dx
 
-    a[2][0] = -inner(qT, div(u))*dx
-    a[2][2] = (-1/lmbda)*inner(qT, pT)*dx    
-    a[2][3] = (alpha/lmbda)*inner(qT, p)*dx
-
-    a[3][1] = -inner(q, div(l))*dx
-    a[3][2] = (alpha/lmbda)*inner(pT, q)*dx
-    a[3][3] = -(c + alpha**2/lmbda)*inner(p, q)*dx    
-    
     u_neumann_tags = bdry_tags - set(u_dirichlet_tags)
     p_neumann_tags = bdry_tags - set(p_dirichlet_tags)
 
@@ -63,83 +55,88 @@ def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_ta
     L[0] += sum(inner(data['u_neumann'][tag], v)*ds(tag) for tag in u_neumann_tags)
     
     # Pressure eq.
-    if p_dirichlet_tags:
-        L[1] = -sum(inner(data['p_dirichlet'][tag], dot(m, n))*ds(tag) for tag in p_dirichlet_tags)    
+    L[1] = inner(-data['f_p'], q)*dx
+    L[1] += sum(inner(data['p_neumann'][tag], q)*ds(tag) for tag in p_neumann_tags)
 
-    L[3] = inner(-data['f_p'], q)*dx
+    L[2] = -inner(data['p'], dr)*dx
+    # Nitsche bcs for pressure
+    hF = CellDiameter(Q.mesh())
+    nF = FacetNormal(Q.mesh())
+    gammaF = Constant(5)
+    for tag in p_dirichlet_tags:
+        a[1][1] += (+ inner(dot(K*grad(p), nF), q)*ds(tag)
+                    + inner(dot(K*grad(q), nF), p)*ds(tag)
+                    - (K*gammaF/hF)*inner(p, q)*ds(tag))
+
+        p0 = data['p_dirichlet'][tag]
+        L[1] += (+ inner(dot(K*grad(q), nF), p0)*ds(tag)
+                 - (K*gammaF/hF)*inner(p0, q)*ds(tag))
 
     V_bcs = [DirichletBC(V, data['u_dirichlet'][tag], boundaries, tag) for tag in u_dirichlet_tags]
-    M_bcs = [DirichletBC(M, data['flux'], boundaries, tag) for tag in p_neumann_tags]
-    QT_bcs = []
     Q_bcs = []
-    W_bcs = [V_bcs, M_bcs, QT_bcs, Q_bcs]
+    R_bcs = []
+    W_bcs = [V_bcs, Q_bcs, R_bcs]
 
     A, b = map(ii_assemble, (a, L))
-    
     A, b = apply_bc(A, b, bcs=W_bcs)
 
     return A, b, W, W_bcs
 
 
 def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags,
-                               inverseQ='lu'):
+                               inverseQ='lu', scaleR=True):
     '''Structure V x (Q x QT) where pressures are coupled'''
-    mesh = boundaries.mesh()
-    ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
-    n = FacetNormal(mesh)
-
-    V, M, QT, Q = W
-    
-    u, l, pT, p = map(TrialFunction, W)
-    v, m, qT, q = map(TestFunction, W)
+    V, Q, R = W
+    u, p, r = map(TrialFunction, W)
+    v, q, dr = map(TestFunction, W)
 
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
-                              for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
-
-    a = block_form(W[:2], 2)
-    a[0][0] = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx
-    a[1][1] = (1/K)*inner(l, m)*dx + inner(div(l), div(m))*dx
-
-    BB  = ii_assemble(a)
-    BB, _ = apply_bc(BB, b=None, bcs=W_bcs[:2])
-    B0, B1 = BB[0][0], BB[1][1]
-
-    QTQ = [QT, Q]
-
-    cA = block_form(QTQ, 2)
-    # ---
-    cA[0][0] = (1/lmbda + 1/2/mu)*inner(qT, pT)*dx    
-    cA[0][1] = (-alpha/lmbda)*inner(qT, p)*dx
-    cA[1][0] = (-alpha/lmbda)*inner(pT, q)*dx
-    cA[1][1] = (c + alpha**2/lmbda + 1)*inner(p, q)*dx
+                               for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
 
 
-    cB = block_form(QTQ, 2)
-    # ---
-    cB[0][0] = (1/lmbda + 1/2/mu)*inner(qT, pT)*dx    
-    cB[0][1] = (-alpha/lmbda)*inner(qT, p)*dx
-    cB[1][0] = (-alpha/lmbda)*inner(pT, q)*dx
-    cB[1][1] = (c + alpha**2/lmbda)*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
-    # FIXME: add Nitsce bcs?
-    ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
-    nF, hF = FacetNormal(Q.mesh()), CellDiameter(Q.mesh())
+    b0 = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx + (1+lmbda)*inner(div(u), div(v))*dx
+    L = inner(Constant((0, 0)), v)*dx
+    B0, _ = assemble_system(b0, L, Wbcs[0])
+
+    ds = Measure('ds', domain=Q.mesh(), subdomain_data=boundaries)
+
+    b23 = block_form(W, 2)
+    # ----
+    b1 = (c + alpha**2/(1+lmbda))*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
+    # Nietsche terms
+    hF = CellDiameter(Q.mesh())
+    nF = FacetNormal(Q.mesh())
     gammaF = Constant(5)
-    # Add Nietsche terms
     for tag in p_dirichlet_tags:
-        cB[1][1] += (
-            - inner(dot(K*grad(p), nF), q)*ds(tag)
-            - inner(dot(K*grad(q), nF), p)*ds(tag)
-            + (K*gammaF/hF)*inner(p, q)*ds(tag)
-        ) 
+        b1 += (- inner(dot(K*grad(p), nF), q)*ds(tag)
+               - inner(dot(K*grad(q), nF), p)*ds(tag)
+               + (K*gammaF/hF)*inner(p, q)*ds(tag))
 
-    CA, CB = (monolithic(ii_assemble(x)) for x in (cA, cB))
+    if scaleR:
+        beta = Constant(get_domain_diameter(mesh)**2)        
+        b1 += (1/beta)*inner(p, q)*dx
+
+        b2 = beta*inner(r, dr)*dx
+    else:
+        b2 = inner(r, dr)*dx
     
-    iB0 = LU(B0)
-    iB1 = LU(B1)
-    iCA, iCB = LU(CA), LU(CB)
+    B1 = ii_assemble(b1)
+    #
+    B2 = ii_assemble(b2)
 
-    R = ReductionOperator([1, 2, 4], W)
-    iBB = R.T*block_diag_mat([iB0, iB1, iCA + iCB])*R
+    BB = block_diag_mat([B0, B1, B2])
+    # In inversion we do 1 x 2
+    iB00 = LU(B0)
+
+    if inverseQ == 'lu':
+        iB11 = LU(B1)
+    elif inverseQ == 'amg':
+        raise ValueError
+        iB11 = AMG(B1)
+
+    iB22 = LU(B2)
+    
+    iBB = block_diag_mat([iB00, iB11, iB22])
 
     return BB, iBB
 
@@ -147,10 +144,9 @@ def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_di
 def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags,
                                      inverseQ='lu'):
     '''Structure V x (Q x QT) where pressures are coupled'''
-    raise NotImplementedError
-    V, Q = W
-    u, p = map(TrialFunction, W)
-    v, q = map(TestFunction, W)
+    V, Q, R = W
+    u, p, r = map(TrialFunction, W)
+    v, q, dr = map(TestFunction, W)
 
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
                                for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
@@ -195,10 +191,15 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     m_form = (alpha**2/(1+lmbda))*inner(p0, q0)*dx
 
     e_form = c_form(p0, q0) + c_form(p1, q0) + c_form(p0, q1) + c_form(p1, q1)
-    e_form += m_form + k_form
+
+    beta = Constant(get_domain_diameter(mesh)**2)
+    e_form += m_form + k_form + (1/beta)*inner(p1, q1)*dx
 
     EE = assemble(e_form)
 
+    # ---
+    B2 = assemble((beta)*inner(r, dr)*dx)
+    
     # ----
 
     precond0 = LU(B0)
@@ -219,8 +220,10 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     S = StackOperator(Q, QQ)  
 
     precond1 = S.T*invE*S
+
+    precond2 = LU(B2)
     
-    iBB = block_diag_mat([precond0, precond1])
+    iBB = block_diag_mat([precond0, precond1, precond2])
 
     return None, iBB
 
@@ -240,8 +243,6 @@ if __name__ == '__main__':
     parser.add_argument('-precond', type=str, default='standard')
     parser.add_argument('-inverseQ', type=str, default='lu', choices=('lu', 'amg'))
     # bcs
-    parser.add_argument('-ubcs', type=str, help='Spec of bcs for momentum: D or T', default='TTDD')
-    parser.add_argument('-pbcs', type=str, help='Spec of bcs for mass: P or F', default='FFFF')    
     # Material
     parser.add_argument('-alpha', type=float, default=1E0)
     parser.add_argument('-K', type=float, default=1)
@@ -252,7 +253,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
 
-    result_dir = f'./results/biot4/precond{args.precond}'
+    result_dir = f'./results/ker_biot2/precond{args.precond}'
     not os.path.exists(result_dir) and os.makedirs(result_dir)
 
     ignore_keys = ('nrefs', )
@@ -266,13 +267,14 @@ if __name__ == '__main__':
     #  --------------4------
     # 1|                   |2
     #  --------------3------
-    u_dirichlet_tags = parse_V_bcs(args.ubcs, boundary_tags)
-    p_dirichlet_tags = parse_Q_bcs(args.pbcs, boundary_tags)
+    u_dirichlet_tags = parse_V_bcs('DDDD', boundary_tags)
+    p_dirichlet_tags = parse_Q_bcs('FFFF', boundary_tags)
 
 
     get_inner_product = {
-                         'standard': get_inner_product_standard,
-                         'espen': get_inner_product_espen
+        'standard': partial(get_inner_product_standard, scaleR=True),
+        'standard_noscale': partial(get_inner_product_standard, scaleR=False),
+        'espen': get_inner_product_espen
     }[args.precond]
 
     parameters = BiotParameters(alpha=args.alpha, K=args.K, mu=args.mu, lmbda=args.lmbda, c=args.c)
@@ -288,7 +290,7 @@ if __name__ == '__main__':
     opts.setValue('options_view', None)
 
     headers = ('h', 'ndofs', '|GD|', '|GP|',
-               '|eu|1', 'reu', '|ez|_div', 'rez', '|epT|0', 'rep', '|ep|0', 'rep0',
+               '|eu|1', 'reu', '|ep|1', 'rep1',
                'niters', 'lminKSP', 'lmaxKSP', 'condKSP')
 
     length = args.L
@@ -333,13 +335,11 @@ if __name__ == '__main__':
         
         # Check convergence
         eu = errornorm(mms_data['u'], wh[0], 'H10')
-        ez = errornorm(mms_data['flux'], wh[1], 'Hdiv')
-        epT = errornorm(mms_data['pT'], wh[2], 'L2')
-        ep = errornorm(mms_data['p'], wh[3], 'L2')
+        ep = errornorm(mms_data['p'], wh[1], 'H10')
 
         h = mesh.hmin()
         ndofs = sum(Wi.dim() for Wi in W)
-        errors = np.array([eu, ez, epT, ep])
+        errors = np.array([eu, ep])
         if errors0 is not None:
             rates = np.log(errors/errors0)/np.log(h/h0)
         else:

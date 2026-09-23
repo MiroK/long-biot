@@ -9,6 +9,13 @@ from xii.linalg.convert import numpy_to_petsc
 import numpy as np
 
 
+def get_domain_diameter(mesh):
+    '''Well if it is rectangle'''
+    xmin, ymin = mesh.coordinates().min(axis=0)
+    xmax, ymax = mesh.coordinates().max(axis=0)
+    return max(ymax - ymin, xmax - xmin)
+
+
 def StackOperator(dspaces, rspaces):
     '''Q -> Q x Q'''
     if isinstance(dspaces, FunctionSpace):
