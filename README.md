@@ -11,3 +11,7 @@
   - [x] 2field formulation
   - [ ] 3field formulation
   - [ ] 4field formulation
+
+- Is there a reduced model
+- Using P transformation on the system
+- solving for p - bar(p)

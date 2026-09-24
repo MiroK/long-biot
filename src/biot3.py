@@ -293,7 +293,7 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
                'P': set()}
     scale = Constant(1) # FIXME, this will be the thickness
-    kappa = alpha**2/(1+lmbda)*scale**2
+    kappa = scale**2/2/mu    
     k_form, ker = Laplacian((p2, q2), boundaries, bc_tags, kappa=kappa)
 
     a += k_form + (1/lmbda)*inner(p2, q2)*dx
@@ -320,7 +320,7 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
                    })
     precond1 = invE
 
-    S = StackOperator(2, QT, W=[V, Q])
+    S = StackOperator(2, QT, pre=[V, Q])
     R = ReductionOperator([1, 4], [V, Q, QT, QT])
 
     # Serialization of QQ
@@ -394,7 +394,7 @@ def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags
     invE = LU(E)
     precond2 = invE
 
-    S = StackOperator(2, QT, W=[V, Q])
+    S = StackOperator(2, QT, pre=[V, Q])
     R = ReductionOperator([1, 2, 4], [V, Q, QT, QT])
 
     precond = block_diag_mat([precond0, precond1, precond2])
