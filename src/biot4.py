@@ -9,19 +9,20 @@ import sympy as sp
 import ulfy
 from xii import *
 
-from block.algebraic.petsc import KSP, LU, AMG
+from block.algebraic.petsc import KSP, AMG, LU
 from block.block_mat import block_mat
 
-print = PETSc.Sys.Print
 
-from utils import StackOperator
+from utils import SerializeOperator
+
+print = PETSc.Sys.Print
 
 from biot3 import (BiotParameters, Laplacian, generate_2d_domains, setup_2d_mms,
                    parse_V_bcs, parse_Q_bcs, get_path, SYM)
 
 # ---
 
-def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_tags, bdry_tags):
+def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_tags, bdry_tags, q_degrees='1_0'):
     '''Three field formulation'''
     mesh = boundaries.mesh()
     ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
@@ -29,8 +30,13 @@ def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_ta
 
     V = VectorFunctionSpace(mesh, 'CG', 2)
     M = FunctionSpace(mesh, 'RT', 1)
-    QT = FunctionSpace(mesh, 'CG', 1)
-    Q = FunctionSpace(mesh, 'DG', 0)
+
+    qt_deg, q_deg = map(int, q_degrees.split('_'))
+    if qt_deg == 0:
+        QT = FunctionSpace(mesh, 'DG', qt_deg)
+    else:
+        QT = FunctionSpace(mesh, 'CG', qt_deg)
+    Q = FunctionSpace(mesh, 'DG', q_deg)
     W = [V, M, QT, Q]
     
     u, l, pT, p = map(TrialFunction, W)
@@ -120,6 +126,11 @@ def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_di
     cB[0][1] = (-alpha/lmbda)*inner(qT, p)*dx
     cB[1][0] = (-alpha/lmbda)*inner(pT, q)*dx
     cB[1][1] = (c + alpha**2/lmbda)*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
+
+    # Handle DG0 Laplacian
+    hF = CentroidDistance(mesh)
+    cB[1][1] += K*Constant(1)/avg(hF)*inner(jump(p), jump(q))*dS
+    
     # FIXME: add Nitsce bcs?
     ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
     nF, hF = FacetNormal(Q.mesh()), CellDiameter(Q.mesh())
@@ -145,82 +156,151 @@ def get_inner_product_standard(boundaries, parameters, *, u_dirichlet_tags, p_di
 
 
 def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_dirichlet_tags, W, Wbcs, bdry_tags,
-                                     inverseQ='lu'):
+                            inverseQ='lu'):
     '''Structure V x (Q x QT) where pressures are coupled'''
-    raise NotImplementedError
-    V, Q = W
-    u, p = map(TrialFunction, W)
-    v, q = map(TestFunction, W)
+    mesh = boundaries.mesh()
+    V, M, QT, Q = W
+    
+    u, l, pT, p = map(TrialFunction, W)
+    v, m, qT, q = map(TestFunction, W)
 
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
-                               for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
+                              for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
 
-    
-    b0 = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx + (1+lmbda)*inner(div(u), div(v))*dx
-    L = inner(Constant((0, 0)), v)*dx
-    B0, _ = assemble_system(b0, L, Wbcs[0])
+    a = block_form(W[:2], 2)
+    a[0][0] = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx
+    a[1][1] = (1/K)*inner(l, m)*dx + inner(div(l), div(m))*dx
 
+    BB  = ii_assemble(a)
+    BB, _ = apply_bc(BB, b=None, bcs=W_bcs[:2])
+    B0, B1 = BB[0][0], BB[1][1]
 
-    ds = Measure('ds', domain=Q.mesh(), subdomain_data=boundaries)        
-    hF = CellDiameter(Q.mesh())
-    nF = FacetNormal(Q.mesh())
+    # -----------------
+
+    if inverseQ == 'amg':
+        assert Q.ufl_element() == QT.ufl_element()
+
+    ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
+    nF, hF = FacetNormal(Q.mesh()), CentroidDistance(Q.mesh())
     gammaF = Constant(5)
-    
-    def c_form(p, q, ds=ds, hF=hF, gammaF=gammaF):
-        # Now components of Espen preconditioner
-        a = c*inner(p, q)*dx + inner(K*grad(p), grad(q))*dx
-
-        # Pressure bcs
-        for tag in p_dirichlet_tags:
-            a += (- inner(dot(K*grad(p), nF), q)*ds(tag)
-                  - inner(dot(K*grad(q), nF), p)*ds(tag)
-                  + (K*gammaF/hF)*inner(p, q)*ds(tag))    
-        return a
-
-    # Extended space for the inverse
-    QQ = FunctionSpace(mesh, MixedElement([Q.ufl_element()]*2))
-
-    p0, p1 = TrialFunctions(QQ)
-    q0, q1 = TestFunctions(QQ)
-    
+    # Monolithic operator for stacked pressures    
+    QQ = FunctionSpace(mesh,
+                       MixedElement([Q.ufl_element(), Q.ufl_element(), QT.ufl_element(), QT.ufl_element()]))
     # ---
+    pT, pTb, p, pb = TrialFunctions(QQ)
+    qT, qTb, q, qb = TestFunctions(QQ)
 
+    a = (1/2/mu + 1/lmbda)*inner(pT, qT)*dx
+    a += (1/lmbda)*inner(pTb, qT)*dx
+    a += (-alpha/lmbda)*inner(p, qT)*dx
+    a += (-alpha/lmbda)*inner(pb, qT)*dx
+
+    
+    a += (1/lmbda)*inner(pT, qTb)*dx
+    a += (1/lmbda)*inner(pTb, qTb)*dx
+    # FIXME: add Laplacian from Stokes
     bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
                'P': set()}
     scale = Constant(1) # FIXME, this will be the thickness
-    kappa = alpha**2/(1+lmbda)*scale**2
-    k_form, ker = Laplacian((p1, q1), boundaries, bc_tags, kappa=kappa)
+    kappa = scale**2/2/mu    
+    k_form, ker = Laplacian((pTb, qTb), boundaries, bc_tags, kappa=kappa)
+    # ...
+    a += k_form    
+    
+    a += (-alpha/lmbda)*inner(p, qTb)*dx
+    a += (-alpha/lmbda)*inner(pb, qTb)*dx
 
-    # ---
-    m_form = (alpha**2/(1+lmbda))*inner(p0, q0)*dx
+    
+    a += (-alpha/lmbda)*inner(pT, q)*dx
+    a += (-alpha/lmbda)*inner(pTb, q)*dx
+    a += (1 + c + alpha**2/lmbda)*inner(p, q)*dx
+    a += (c + alpha**2/lmbda)*inner(pb, q)*dx
 
-    e_form = c_form(p0, q0) + c_form(p1, q0) + c_form(p0, q1) + c_form(p1, q1)
-    e_form += m_form + k_form
+    
+    a += (-alpha/lmbda)*inner(pT, qb)*dx
+    a += (-alpha/lmbda)*inner(pTb, qb)*dx
+    a += (c + alpha**2/lmbda)*inner(p, qb)*dx
+    a += (c + alpha**2/lmbda)*inner(pb, qb)*dx
+    # FIXME: add Laplacian from fluid
+    a += inner(K*grad(pb), grad(qb))*dx + K*Constant(1)/avg(hF)*inner(jump(pb), jump(qb))*dS
+    # Add Nietsche terms
+    for tag in p_dirichlet_tags:
+        a += (
+            - inner(dot(K*grad(pb), nF), qb)*ds(tag)
+            - inner(dot(K*grad(qb), nF), pb)*ds(tag)
+            + (K*gammaF/hF)*inner(pb, qb)*ds(tag)
+        )
 
-    EE = assemble(e_form)
-
-    # ----
-
+    # -----
+    EE = assemble(a)
+    
     precond0 = LU(B0)
+    precond1 = LU(B1)
 
+    # Putting together
     if inverseQ == 'lu':
         invE = LU(EE)
     elif inverseQ == 'amg':
-
         invE = AMG(EE,
                    parameters={
                        'pc_hypre_boomeramg_strong_threshold': 0.1,
                        'pc_hypre_boomeramg_nodal_coarsen': 1,
                        'pc_hypre_boomeramg_vec_interp_variant': 1,
-                       'pc_hypre_boomeramg_interp_type': 'ext+i',
-                       'pc_hypre_boomeramg_smooth_type': 'Schwarz-smoothers'
+                       'pc_hypre_boomeramg_interp_type': 'direct',  #'ext+i',
+                       'pc_hypre_boomeramg_smooth_type': 'Schwarz-smoothers',
+                       # 'pc_hypre_boomeramg_nodal_relaxation': None,
                    })
+    elif inverseQ == 'pyamg':
+        from scipy.sparse import csr_matrix
+        from block.block_base import block_base
+        import pyamg
 
-    S = StackOperator(Q, QQ)  
+        EE_ = as_backend_type(EE).mat()
+        indptr, indices, data = EE_.getValuesCSR()
+        
+        EE_scipy = csr_matrix((data, indices, indptr), shape=EE_.getSize()).tobsr((4, 4))
 
-    precond1 = S.T*invE*S
+        prec = pyamg.smoothed_aggregation_solver(
+            A=EE_scipy,
+            aggregate='standard',
+            smooth=('energy', {'weighting': 'block'}),
+            presmoother=('block_gauss_seidel',
+                         {'sweep': 'symmetric'}),
+            postsmoother=('block_gauss_seidel',
+                          {'sweep': 'symmetric'}),
+            improve_candidates=[('block_gauss_seidel',
+                                 {'sweep': 'symmetric',
+                                  'iterations': 6}),
+                                None],        
+        ).aspreconditioner()
+
+        class Precond(block_base):
+            def __init__(self, prec):
+                self.prec = prec
+                self.A = EE
+                
+            def matvec(self, x):
+                y = x.copy()
+                y.set_local(self.prec@x.get_local())
+                return y
+            
+            def create_vec(self, which):
+                return PETScVector(EE_.createVecs()[which])
+
+        invE = Precond(prec)
+    # Finally
+    precond2 = invE
     
-    iBB = block_diag_mat([precond0, precond1])
+    # And now ...
+    S = StackOperator([(2, QT), (2, Q)], pre=[V, M])
+    R = ReductionOperator([1, 2, 6], [V, M, QT, QT, Q, Q])
+
+    # Serialization of QQ
+    T = SerializeOperator(QQ)
+
+    precond = block_diag_mat([precond0, precond1, T*precond2*T.T])
+    
+    iBB = S.T*R.T*precond*R*S
 
     return None, iBB
 
@@ -238,7 +318,7 @@ if __name__ == '__main__':
     parser.add_argument('-nrefs', type=int, default=4)
     
     parser.add_argument('-precond', type=str, default='standard')
-    parser.add_argument('-inverseQ', type=str, default='lu', choices=('lu', 'amg'))
+    parser.add_argument('-inverseQ', type=str, default='lu', choices=('lu', 'amg', 'pyamg'))
     # bcs
     parser.add_argument('-ubcs', type=str, help='Spec of bcs for momentum: D or T', default='TTDD')
     parser.add_argument('-pbcs', type=str, help='Spec of bcs for mass: P or F', default='FFFF')    
@@ -300,7 +380,8 @@ if __name__ == '__main__':
         A, b, W, W_bcs = get_system(boundaries, parameters=parameters, data=mms_data,
                                     u_dirichlet_tags=u_dirichlet_tags,
                                     p_dirichlet_tags=p_dirichlet_tags,
-                                    bdry_tags=boundary_tags)
+                                    bdry_tags=boundary_tags,
+                                    q_degrees='0_0')
 
         B, invB = get_inner_product(boundaries, parameters=parameters,
                                     u_dirichlet_tags=u_dirichlet_tags,

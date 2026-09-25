@@ -9,7 +9,7 @@ import sympy as sp
 import ulfy
 from xii import *
 
-from block.algebraic.petsc import KSP, LU, AMG
+from block.algebraic.petsc import KSP, AMG, LU
 from block.block_mat import block_mat
 import os
 
@@ -300,7 +300,7 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
 
     # Puttin together
     EE = ii_assemble(a)
-   
+    
     # ----
 
     precond0 = LU(B0)
@@ -315,12 +315,52 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
                        'pc_hypre_boomeramg_strong_threshold': 0.1,
                        'pc_hypre_boomeramg_nodal_coarsen': 1,
                        'pc_hypre_boomeramg_vec_interp_variant': 1,
-                       'pc_hypre_boomeramg_interp_type': 'ext+i',
-                       'pc_hypre_boomeramg_smooth_type': 'Schwarz-smoothers'
+                       'pc_hypre_boomeramg_interp_type': 'direct',  #'ext+i',
+                       'pc_hypre_boomeramg_smooth_type': 'Schwarz-smoothers',
+                       # 'pc_hypre_boomeramg_nodal_relaxation': None,
                    })
+    elif inverseQ == 'pyamg':
+        from scipy.sparse import csr_matrix
+        from block.block_base import block_base
+        import pyamg
+
+        EE_ = as_backend_type(EE).mat()
+        indptr, indices, data = EE_.getValuesCSR()
+        
+        EE_scipy = csr_matrix((data, indices, indptr), shape=EE_.getSize()).tobsr((3, 3))
+
+        prec = pyamg.smoothed_aggregation_solver(
+            A=EE_scipy,
+            aggregate='standard',
+            smooth=('energy', {}),
+            presmoother=('block_gauss_seidel',
+                         {'sweep': 'symmetric'}),
+            postsmoother=('block_gauss_seidel',
+                          {'sweep': 'symmetric'}),
+            improve_candidates=[('block_gauss_seidel',
+                                 {'sweep': 'symmetric',
+                                  'iterations': 4}),
+                                None],        
+        ).aspreconditioner()
+
+        class Precond(block_base):
+            def __init__(self, prec):
+                self.prec = prec
+                self.A = EE
+                
+            def matvec(self, x):
+                y = x.copy()
+                y.set_local(self.prec@x.get_local())
+                return y
+            
+            def create_vec(self, which):
+                return PETScVector(EE_.createVecs()[which])
+
+        invE = Precond(prec)
+        
     precond1 = invE
 
-    S = StackOperator(2, QT, pre=[V, Q])
+    S = StackOperator((2, QT), pre=[V, Q])
     R = ReductionOperator([1, 4], [V, Q, QT, QT])
 
     # Serialization of QQ
@@ -394,7 +434,7 @@ def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags
     invE = LU(E)
     precond2 = invE
 
-    S = StackOperator(2, QT, pre=[V, Q])
+    S = StackOperator((2, QT), pre=[V, Q])
     R = ReductionOperator([1, 2, 4], [V, Q, QT, QT])
 
     precond = block_diag_mat([precond0, precond1, precond2])
@@ -451,7 +491,7 @@ if __name__ == '__main__':
     # Material
     parser.add_argument('-alpha', type=float, default=1E0)
     parser.add_argument('-K', type=float, default=1)
-    parser.add_argument('-mu', type=float, default=1)
+    parser.add_argument('-mu', type=float, default=0.5)
     parser.add_argument('-lmbda', type=float, default=1)
     parser.add_argument('-c', type=float, default=0)
 

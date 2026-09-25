@@ -9,7 +9,7 @@ import sympy as sp
 import ulfy
 from xii import *
 
-from block.algebraic.petsc import KSP, LU, AMG
+from block.algebraic.petsc import KSP, AMG, LU
 from block.block_mat import block_mat
 import os
 
@@ -282,7 +282,7 @@ if __name__ == '__main__':
         ksp.setComputeEigenvalues(True)
         ksp.setFromOptions()
 
-        S = StackOperator(2, W[1])
+        S = StackOperator((2, W[1]))
         b = AA.create_vec()
         b.set_local(np.random.rand(b.size()))
 

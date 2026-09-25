@@ -319,7 +319,7 @@ if __name__ == '__main__':
         ksp.setComputeEigenvalues(True)
         ksp.setFromOptions()
 
-        S = StackOperator(2, W[1])
+        S = StackOperator((2, W[1]))
         b = AA.create_vec()
         b.set_local(np.random.rand(b.size()))
 

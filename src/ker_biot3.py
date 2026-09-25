@@ -252,7 +252,7 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     precond1 = invE
     precond2 = LU(BR)
 
-    S = StackOperator(2, QT, pre=[V, Q], post=R)
+    S = StackOperator((2, QT), pre=[V, Q], post=R)
     R = ReductionOperator([1, 4, 5], [V, Q, QT, QT, R])
 
     # Serialization of QQ
