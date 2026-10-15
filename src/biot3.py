@@ -82,7 +82,8 @@ def setup_2d_mms(parameters):
     '''Manufactured problem on (0, 1)^2'''
     x, y = SpatialCoordinate(UnitSquareMesh(2, 2))
 
-    u = as_vector((sin(pi*(x+y)), sin(2*pi*(x-y))))
+    phi = sin(pi*(x+y))
+    u = as_vector((phi.dx(1), -phi.dx(0)))
     p = cos(pi*(x-y))
 
     mu, K, alpha, lmbda = Constant(1), Constant(1), Constant(1), Constant(1)
