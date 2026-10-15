@@ -398,7 +398,7 @@ def get_inner_product_espen_diagonal(boundaries, parameters, *, u_dirichlet_tags
     gammaF = Constant(5)
     # Add Nietsche terms
     for tag in p_dirichlet_tags:
-        a[0][0] += (
+        b1 += (
             - inner(dot(K*grad(p), nF), q)*ds(tag)
             - inner(dot(K*grad(q), nF), p)*ds(tag)
             + (K*gammaF/hF)*inner(p, q)*ds(tag)
