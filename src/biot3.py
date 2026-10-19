@@ -491,10 +491,10 @@ if __name__ == '__main__':
     parser.add_argument('-pbcs', type=str, help='Spec of bcs for mass: P or F', default='FFFF')    
     # Material
     parser.add_argument('-alpha', type=float, default=1E0)
-    parser.add_argument('-K', type=float, default=1)
+    parser.add_argument('-K', type=float, default=1.0)
     parser.add_argument('-mu', type=float, default=0.5)
-    parser.add_argument('-lmbda', type=float, default=1)
-    parser.add_argument('-c', type=float, default=0)
+    parser.add_argument('-lmbda', type=float, default=1E0)
+    parser.add_argument('-c', type=float, default=0.0)
 
     args = parser.parse_args()
 

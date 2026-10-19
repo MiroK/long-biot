@@ -88,30 +88,18 @@ nrefs=5
 
 
 nrefs=5
-for script in biot3.py biot4.py
+pbcs="PPFF"
+for L in 1 20 40 80
 do
-    pbcs="PPFF"
-
-    # Loop K
-    for K in 1E-10 1E0 1E-2 1E-4 1E-6 1E-8
+    for script in biot3.py biot4.py
     do
-	python3 $script -L 1 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K
-	python3 $script -L 5 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K
-	python3 $script -L 10 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K
-	python3 $script -L 20 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K
-	python3 $script -L 40 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K
-	python3 $script -L 80 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K
+	# Loop lmbda
+	for lmbda in 1E10 1E8 1E0 1E2 1E4 1E6
+	do
+	    for K in 1E-10 1E0 1E-2 1E-4 1E-6 1E-8
+	    do
+		python3 $script -L $L -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda -K $K
+	    done
+	done
     done
-
-    # Loop lmbda
-    for lmbda in 1E10 1E0 1E2 1E4 1E6 1E8
-    do
-	python3 $script -L 1 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda
-	python3 $script -L 5 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda
-	python3 $script -L 10 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda
-	python3 $script -L 20 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda
-	python3 $script -L 40 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda
-	python3 $script -L 80 -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda
-    done    
-    
 done

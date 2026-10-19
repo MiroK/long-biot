@@ -231,15 +231,15 @@ if __name__ == '__main__':
     parser.add_argument('-normalize', type=int, default=0, choices=(0, 1))
 
 
-    parser.add_argument('-precond', type=str, default='standard')
+    parser.add_argument('-precond', type=str, default='espen')
     parser.add_argument('-inverseQ', type=str, default='lu')
     
     # bcs
     parser.add_argument('-ubcs', type=str, help='Spec of bcs for momentum: D or T', default='TTDD')
-    parser.add_argument('-pbcs', type=str, help='Spec of bcs for mass: P or F', default='FFFF')    
+    parser.add_argument('-pbcs', type=str, help='Spec of bcs for mass: P or F', default='PPFF')    
     # Material
     parser.add_argument('-alpha', type=float, default=1E0)
-    parser.add_argument('-K', type=float, default=1)
+    parser.add_argument('-K', type=float, default=1.0)
     parser.add_argument('-mu', type=float, default=0.5)
     parser.add_argument('-lmbda', type=float, default=1)
     parser.add_argument('-c', type=float, default=0.0)    
