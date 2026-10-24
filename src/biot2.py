@@ -165,7 +165,7 @@ def get_inner_product_espen(boundaries, parameters, *, u_dirichlet_tags, p_diric
     bc_tags = {'T': set(bdry_tags) - set(u_dirichlet_tags),
                'P': set()}
     scale = Constant(1) # FIXME, this will be the thickness
-    kappa = alpha**2/(1+lmbda)*scale**2
+    kappa = alpha**2*scale**2
     k_form, ker = Laplacian((p1, q1), boundaries, bc_tags, kappa=kappa)
 
     # ---

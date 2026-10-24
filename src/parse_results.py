@@ -246,13 +246,20 @@ if __name__ == '__main__':
     
     args, _ = parser.parse_known_args()
 
-    template = f'precond{args.precond}/cvrg_L*_PRECOND{args.precond}_INVERSEQ{args.inverseQ}_UBCS{args.ubcs}_PBCS{args.pbcs}_ALPHA{args.alpha}_K{args.K}_MU{args.mu}_LMBDA{args.lmbda}_C{args.c}.txt'
+
+    template = f'precond{args.precond}/cvrg_L*_PRECOND{args.precond}_INVERSEQlu_UBCSTTDD_PBCSPPFF_ALPHA1.0_K1_MU0.5_LMBDA{args.lmbda}_C0.0.txt'
+
+    L = 10
+    biot = 3
+    template = f'biot{biot}/precondespen/cvrg_L{L}_PRECONDespen_INVERSEQlu_UBCSTTDD_PBCSPPFF_ALPHA1.0_K*_MU0.5_LMBDA*_C0.0.txt'
+    #template = f'precond{args.precond}/cvrg_L*_PRECOND{args.precond}_INVERSEQlu_UBCSTTDD_PBCSPPFF_ALPHA1.0_K{args.K}_MU0.5_LMBDA1_C0.0.txt'    
 
     pattern = None
     which_num = 0
 
     variable_ranges = {#'LENGTH': (1, 2, 5, 10, 20, 50, 100)}
-        'L': (1, 5, 10, 20, 40, 80)
+        'LMBDA': (1E0, 1E2, 1E4, 1E6, 1E8, 1E10),
+        'K': (1E0, 1E-2, 1E-4, 1E-6, 1E-8, 1E-10)
     }    
     
     reverse_sort_x = {'hmin': True, 'h': True, '|ep|_0': True,

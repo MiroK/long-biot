@@ -141,6 +141,8 @@ def get_system(boundaries, parameters, data, *, u_dirichlet_tags, p_dirichlet_ta
     mu, lmbda, alpha, K, c = (Constant(getattr(parameters, p))
                               for p in ('mu', 'lmbda', 'alpha', 'K', 'c'))
 
+    print([arg(0) for arg in (mu, lmbda, alpha, K, c)])
+
     a = block_form(W, 2)
     a[0][0] = inner(2*mu*SYM(grad(u)), SYM(grad(v)))*dx
     a[0][2] = -inner(pT, div(v))*dx
