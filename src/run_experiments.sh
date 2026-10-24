@@ -9,14 +9,17 @@ nrefs=5
 # python3 biot2.py -L 40 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
 # python3 biot2.py -L 80 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
 
-# # It does not happen with other bcs
-# pbcs="PPPP"
-# python3 biot2.py -L 1 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
+# # It does not happen with other bcs  (depending on the parameter regime)
+pbcs="PPPP"
+for K in 1E0 1E-2 1E-4 1E-6 1E-8 1E-10
+do
+    python3 biot2.py -L 1 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
 # python3 biot2.py -L 5 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
 # python3 biot2.py -L 10 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
-# python3 biot2.py -L 20 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
+    python3 biot2.py -L 20 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
 # python3 biot2.py -L 40 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
-# python3 biot2.py -L 80 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
+    python3 biot2.py -L 80 -precond standard -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs
+done
 
 # # Or when c is large enough
 # pbcs="PPFF"
@@ -88,32 +91,19 @@ done
 
 
 # <<<<<<< Updated upstream
-# nrefs=5
-# pbcs="PPFF"
-# for L in 1 20 40 80
-# do
-#     for script in biot3.py biot4.py
-#     do
-# 	# Loop lmbda
-# 	for lmbda in 1E10 1E8 1E0 1E2 1E4 1E6
-# 	do
-# 	    for K in 1E-10 1E0 1E-2 1E-4 1E-6 1E-8
-# 	    do
-# 		python3 $script -L $L -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda -K $K
-# =======
-# nrefs=3
-# pbcs="PPFF"
-# for L in 2
-# do
-#     for script in biot3.py biot4.py
-#     do
-# 	for K in 1E0 1E-2 1E-4 1E-6 1E-8 1E-10
-# 	do
-# 	    for lmbda in 1E0 1E2 1E4 1E6 1E8 1E10
-# 	    do
-# 		python3 $script -L $L -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -K $K -lmbda $lmbda
-# >>>>>>> Stashed changes
-# 	    done
-# 	done
-#     done
-# done
+nrefs=5
+pbcs="PPFF"
+for L in 1 20 40 80
+do
+    for script in biot2.py
+    do
+	# Loop lmbda
+	for lmbda in 1E10 1E8 1E0 1E2 1E4 1E6
+	do
+	    for K in 1E-10 1E0 1E-2 1E-4 1E-6 1E-8
+	    do
+		python3 $script -L $L -precond espen -ubcs TTDD -pbcs $pbcs -c 0.0 -nrefs $nrefs -inverseQ lu -lmbda $lmbda -K $K
+	    done
+	done
+    done
+done
